@@ -23,7 +23,7 @@ const CHART_HEADERS = {
 function parseNumber(raw, formatted) {
   const r = Number(raw)
   if (Number.isFinite(r)) return r
-  return Number(String(formatted ?? '').replace(/,/g, ''))
+  return Number(String(formatted ?? '').replace(/,/g, '').replace(/%/g, ''))
 }
 
 function quoteFromMain(data) {
@@ -103,6 +103,194 @@ function extractCloses(rows) {
 const SEARCH_URL = (kw) =>
   `https://ac.stock.naver.com/ac?q=${encodeURIComponent(kw)}&target=stock`
 
+// 네이버 금융의 시장지표 목록. 주식 검색과 함께 조회해서 환율/금/원유/금리 등을
+// 별도 하드코딩 없이 검색 결과에 포함한다.
+const MARKET_INDEX_SOURCES = [
+  {
+    category: 'exchange',
+    type: '환율',
+    url: 'https://m.stock.naver.com/front-api/marketIndex/exchange/new'
+  },
+  {
+    category: 'exchangeWorld',
+    type: '국제환율',
+    url: 'https://m.stock.naver.com/front-api/marketIndex/exchange/world'
+  },
+  {
+    category: 'energy',
+    type: '에너지',
+    url: 'https://m.stock.naver.com/front-api/marketIndex/energy'
+  },
+  {
+    category: 'metals',
+    type: '금속',
+    url: 'https://m.stock.naver.com/front-api/marketIndex/metals'
+  },
+  {
+    category: 'bond',
+    type: '채권',
+    url: 'https://m.stock.naver.com/front-api/marketIndex/bondMain'
+  },
+  {
+    category: 'domesticInterest',
+    type: '국내금리',
+    url: 'https://m.stock.naver.com/front-api/marketIndex/domesticInterestList'
+  },
+  {
+    category: 'standardInterest',
+    type: '기준금리',
+    url: 'https://m.stock.naver.com/front-api/marketIndex/standardInterestList'
+  }
+]
+
+const MARKET_CACHE_TTL = 2_000
+const marketListCache = new Map()
+
+function collectMarketObjects(value, out = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectMarketObjects(item, out)
+    return out
+  }
+  if (!value || typeof value !== 'object') return out
+
+  const code = value.reutersCode || value.symbolCode || value.code
+  if (value.name && code && value.closePrice != null) out.push(value)
+
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') collectMarketObjects(child, out)
+  }
+  return out
+}
+
+async function fetchMarketSource(source) {
+  const cached = marketListCache.get(source.category)
+  if (cached && Date.now() - cached.ts < MARKET_CACHE_TTL) return cached.items
+
+  const res = await eFetch(source.url, { headers: CHART_HEADERS })
+  if (!res.ok) throw new Error(`Naver market ${source.category}: ${res.status}`)
+  const json = await res.json()
+  const raw = collectMarketObjects(json)
+  const seen = new Set()
+  const items = []
+
+  for (const item of raw) {
+    const code = String(item.reutersCode || item.symbolCode || item.code || '').trim()
+    if (!code) continue
+    const key = `${source.category}:${code}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    items.push(item)
+  }
+
+  marketListCache.set(source.category, { ts: Date.now(), items })
+  return items
+}
+
+function toMarketSearchItem(source, item) {
+  const code = String(item.reutersCode || item.symbolCode || item.code || '').trim()
+  return {
+    market: 'NV',
+    symbol: `${source.category}:${code}`,
+    name: item.name || code,
+    type: source.type,
+    unit: item.unit || '',
+    currency: item.currency || ''
+  }
+}
+
+function marketSearchText(source, item) {
+  return [
+    item.name,
+    item.nameEng,
+    item.reutersCode,
+    item.symbolCode,
+    item.code,
+    item.unit,
+    source.type
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+}
+
+async function searchNaverMarketIndexes(keyword) {
+  const q = keyword.trim().toLowerCase()
+  if (!q) return []
+
+  const settled = await Promise.allSettled(MARKET_INDEX_SOURCES.map(fetchMarketSource))
+  const results = []
+
+  for (let i = 0; i < settled.length; i += 1) {
+    const state = settled[i]
+    if (state.status !== 'fulfilled') continue
+    const source = MARKET_INDEX_SOURCES[i]
+    for (const item of state.value) {
+      if (!marketSearchText(source, item).includes(q)) continue
+      results.push(toMarketSearchItem(source, item))
+    }
+  }
+
+  return results.slice(0, 30)
+}
+
+function parseMarketSymbol(symbol) {
+  const text = String(symbol || '')
+  const idx = text.indexOf(':')
+  if (idx <= 0 || idx >= text.length - 1) return null
+  return {
+    category: text.slice(0, idx),
+    code: text.slice(idx + 1)
+  }
+}
+
+function marketItemToQuote(symbol, source, item) {
+  const price = parseNumber(item.closePriceRaw, item.closePrice)
+  const change = parseNumber(
+    item.fluctuationsRaw ?? item.compareToPreviousClosePriceRaw,
+    item.fluctuations ?? item.compareToPreviousClosePrice
+  )
+  const changeRatio = parseNumber(item.fluctuationsRatioRaw, item.fluctuationsRatio)
+
+  if (!Number.isFinite(price)) throw new Error(`Naver market ${symbol}: no price`)
+
+  return {
+    market: 'NV',
+    symbol,
+    currency: item.currency || '',
+    unit: item.unit || '',
+    name: item.name || item.reutersCode || item.symbolCode || symbol,
+    price,
+    change: Number.isFinite(change) ? change : 0,
+    changeRatio: Number.isFinite(changeRatio) ? changeRatio : 0,
+    isUp: Number.isFinite(change) ? change >= 0 : true,
+    prices: [],
+    assetType: source.type
+  }
+}
+
+export async function fetchNaverMarketIndex(symbol) {
+  const parsed = parseMarketSymbol(symbol)
+  if (!parsed) throw new Error(`잘못된 네이버 시장지표 코드: ${symbol}`)
+
+  const source = MARKET_INDEX_SOURCES.find((s) => s.category === parsed.category)
+  if (!source) throw new Error(`지원하지 않는 네이버 시장지표: ${parsed.category}`)
+
+  const items = await fetchMarketSource(source)
+  const item = items.find((x) => {
+    const code = String(x.reutersCode || x.symbolCode || x.code || '').trim()
+    return code === parsed.code
+  })
+  if (!item) throw new Error(`네이버 시장지표를 찾을 수 없음: ${parsed.code}`)
+
+  return marketItemToQuote(symbol, source, item)
+}
+
+export async function fetchNaverMarketIndexDailyCloses() {
+  // 시장지표마다 과거 데이터 API 구조가 달라 포트폴리오 통계에는 현재가만 사용.
+  // 카드 표시에는 영향이 없고, 통계 계산에서는 해당 항목만 추세/변동성 계산에서 제외됨.
+  return []
+}
+
 // 통계(추세·변동성)용 일봉 종가 — 최근 ~3개월(70거래일 여유). 실패 시 빈 배열.
 const DAILY_URL = (code) =>
   `https://m.stock.naver.com/api/stock/${code}/price?pageSize=70&page=1`
@@ -118,7 +306,7 @@ export async function fetchKoreanDailyCloses(code) {
   }
 }
 
-export async function searchKoreanStocks(keyword) {
+async function searchKoreanEquities(keyword) {
   if (useProxy()) {
     try {
       return await proxySearch('KR', keyword)
@@ -137,6 +325,14 @@ export async function searchKoreanStocks(keyword) {
       name: i.name,
       type: i.typeName || ''
     }))
+}
+
+export async function searchKoreanStocks(keyword) {
+  const [stocks, marketIndexes] = await Promise.all([
+    searchKoreanEquities(keyword).catch(() => []),
+    searchNaverMarketIndexes(keyword).catch(() => [])
+  ])
+  return [...stocks, ...marketIndexes]
 }
 
 export async function fetchKoreanStock(code, { skipChart = false } = {}) {
@@ -180,5 +376,3 @@ export async function fetchKoreanStock(code, { skipChart = false } = {}) {
     prices
   }
 }
-
-

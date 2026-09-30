@@ -18,6 +18,9 @@ const CHART_HEADERS = {
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 }
 
+const CHART_POINTS = 70
+const CRYPTO_CHART_POINTS = 90
+
 function parseNumber(raw, formatted) {
   const r = Number(raw)
   if (raw !== null && raw !== undefined && raw !== '' && Number.isFinite(r)) return r
@@ -91,18 +94,60 @@ function extractQuote(json) {
   }
 }
 
-function extractCloses(rows) {
+function extractCloses(rows, field = 'closePrice') {
   if (!Array.isArray(rows)) return []
   return rows
-    .map((r) => Number(String(r.closePrice ?? '').replace(/,/g, '')))
+    .map((r) => Number(String(r?.[field] ?? '').replace(/,/g, '')))
     .filter((n) => Number.isFinite(n))
     .reverse()
+}
+
+function findPriceRows(value) {
+  if (Array.isArray(value)) {
+    if (value.some((v) => v && typeof v === 'object' && v.closePrice != null)) {
+      return value
+    }
+    for (const child of value) {
+      const found = findPriceRows(child)
+      if (found.length) return found
+    }
+    return []
+  }
+  if (!value || typeof value !== 'object') return []
+  for (const child of Object.values(value)) {
+    const found = findPriceRows(child)
+    if (found.length) return found
+  }
+  return []
 }
 
 const SEARCH_URL = (kw) =>
   `https://m.stock.naver.com/front-api/search/autoComplete?query=${encodeURIComponent(
     kw
   )}&target=stock,index,marketindicator,coin,ipo`
+
+const DOMESTIC_INDEXES = [
+  {
+    code: 'KOSPI',
+    name: '코스피',
+    type: '국내지수',
+    aliases: '코스피 kospi 종합주가지수'
+  },
+  {
+    code: 'KOSDAQ',
+    name: '코스닥',
+    type: '국내지수',
+    aliases: '코스닥 kosdaq'
+  },
+  {
+    code: 'KPI200',
+    name: '코스피200',
+    type: '국내지수',
+    aliases: '코스피200 kospi200 kpi200'
+  }
+]
+
+const DOMESTIC_INDEX_BY_CODE = new Map(DOMESTIC_INDEXES.map((x) => [x.code, x]))
 
 const MARKET_INDEX_SOURCES = [
   {
@@ -172,7 +217,7 @@ const marketListCache = new Map()
 function normalizeMarketObject(value) {
   if (!value || typeof value !== 'object') return null
 
-  const code = value.reutersCode || value.symbolCode || value.code || value.nfTicker
+  const code = value.nfTicker || value.reutersCode || value.symbolCode || value.code
   const name = value.name || value.krName
   const closePrice = value.closePrice ?? value.tradePrice
   if (!name || !code || closePrice == null) return null
@@ -247,7 +292,7 @@ function normalizeSearchText(value) {
 }
 
 function marketAliases(item) {
-  const codeText = [item.reutersCode, item.symbolCode, item.code]
+  const codeText = [item.reutersCode, item.symbolCode, item.code, item.nfTicker]
     .filter(Boolean)
     .join(' ')
     .toUpperCase()
@@ -260,6 +305,7 @@ function marketAliases(item) {
 function marketSearchText(source, item) {
   return normalizeSearchText([
     item.name,
+    item.krName,
     item.nameEng,
     item.reutersCode,
     item.symbolCode,
@@ -271,6 +317,21 @@ function marketSearchText(source, item) {
   ]
     .filter(Boolean)
     .join(' '))
+}
+
+function searchDomesticIndexes(keyword) {
+  const q = normalizeSearchText(keyword)
+  if (!q) return []
+  return DOMESTIC_INDEXES.filter((item) =>
+    normalizeSearchText(`${item.name} ${item.code} ${item.aliases}`).includes(q)
+  ).map((item) => ({
+    market: 'NV',
+    symbol: `index:${item.code}`,
+    name: item.name,
+    type: item.type,
+    unit: '',
+    currency: ''
+  }))
 }
 
 async function searchNaverMarketIndexes(keyword) {
@@ -303,13 +364,40 @@ function parseMarketSymbol(symbol) {
   }
 }
 
-function marketItemToQuote(symbol, source, item) {
+function directionSign(item) {
+  const direction = String(
+    item.change ||
+      item.fluctuationsType?.name ||
+      item.compareToPreviousPrice?.name ||
+      ''
+  ).toUpperCase()
+  const code = String(
+    item.fluctuationsType?.code || item.compareToPreviousPrice?.code || ''
+  )
+  if (direction.includes('FALL') || direction.includes('하락') || code === '4' || code === '5') {
+    return -1
+  }
+  if (direction.includes('RIS') || direction.includes('상승') || code === '1' || code === '2') {
+    return 1
+  }
+  return 0
+}
+
+function signedValue(value, sign) {
+  if (!Number.isFinite(value) || !sign) return value
+  return sign < 0 ? -Math.abs(value) : Math.abs(value)
+}
+
+function marketItemToQuote(symbol, source, item, prices = []) {
   const price = parseNumber(item.closePriceRaw, item.closePrice)
-  const change = parseNumber(
+  let change = parseNumber(
     item.fluctuationsRaw ?? item.compareToPreviousClosePriceRaw,
     item.fluctuations ?? item.compareToPreviousClosePrice
   )
-  const changeRatio = parseNumber(item.fluctuationsRatioRaw, item.fluctuationsRatio)
+  let changeRatio = parseNumber(item.fluctuationsRatioRaw, item.fluctuationsRatio)
+  const sign = directionSign(item)
+  change = signedValue(change, sign)
+  changeRatio = signedValue(changeRatio, sign)
 
   if (!Number.isFinite(price)) throw new Error(`Naver market ${symbol}: no price`)
 
@@ -323,30 +411,163 @@ function marketItemToQuote(symbol, source, item) {
     change: Number.isFinite(change) ? change : 0,
     changeRatio: Number.isFinite(changeRatio) ? changeRatio : 0,
     isUp: Number.isFinite(change) ? change >= 0 : true,
-    prices: [],
+    prices,
     assetType: source.type
   }
 }
 
-export async function fetchNaverMarketIndex(symbol) {
+async function fetchDomesticIndex(code, { skipChart = false } = {}) {
+  const quoteUrl = `https://m.stock.naver.com/api/index/${encodeURIComponent(code)}/basic`
+  const chartUrl = `https://m.stock.naver.com/api/index/${encodeURIComponent(
+    code
+  )}/price?pageSize=${CHART_POINTS}&page=1`
+  const quotePromise = eFetch(quoteUrl, { headers: CHART_HEADERS })
+  const chartPromise = skipChart ? null : eFetch(chartUrl, { headers: CHART_HEADERS })
+
+  const quoteRes = await quotePromise
+  if (!quoteRes.ok) throw new Error(`Naver index ${code}: ${quoteRes.status}`)
+  const data = await quoteRes.json()
+  const price = parseNumber(data.closePriceRaw, data.closePrice)
+  let change = parseNumber(
+    data.compareToPreviousClosePriceRaw,
+    data.compareToPreviousClosePrice
+  )
+  let changeRatio = parseNumber(data.fluctuationsRatioRaw, data.fluctuationsRatio)
+  const sign = directionSign(data)
+  change = signedValue(change, sign)
+  changeRatio = signedValue(changeRatio, sign)
+
+  if (!Number.isFinite(price)) throw new Error(`Naver index ${code}: no price`)
+
+  let prices = []
+  if (chartPromise) {
+    const chartRes = await chartPromise
+    if (chartRes.ok) {
+      try {
+        prices = extractCloses(await chartRes.json())
+      } catch {
+        prices = []
+      }
+    }
+  }
+
+  const info = DOMESTIC_INDEX_BY_CODE.get(code)
+  return {
+    market: 'NV',
+    symbol: `index:${code}`,
+    currency: '',
+    unit: '',
+    name: data.indexName || data.stockName || data.name || info?.name || code,
+    price,
+    change: Number.isFinite(change) ? change : 0,
+    changeRatio: Number.isFinite(changeRatio) ? changeRatio : 0,
+    isUp: Number.isFinite(change) ? change >= 0 : true,
+    prices,
+    assetType: info?.type || '국내지수'
+  }
+}
+
+function cryptoPair(code) {
+  const text = String(code || '').trim().toUpperCase()
+  if (/^[A-Z0-9]+-[A-Z0-9]+$/.test(text)) return text
+  const ticker = text.replace(/^KRW[-_.]?/, '').replace(/[^A-Z0-9]/g, '')
+  return ticker ? `KRW-${ticker}` : ''
+}
+
+async function fetchCryptoDailyCloses(category, code) {
+  const pair = cryptoPair(code)
+  if (!pair) return []
+  const base =
+    category === 'cryptoBithumb' ? 'https://api.bithumb.com' : 'https://api.upbit.com'
+  const url = `${base}/v1/candles/days?market=${encodeURIComponent(
+    pair
+  )}&count=${CRYPTO_CHART_POINTS}`
+  try {
+    const res = await eFetch(url, { headers: { Accept: 'application/json' } })
+    if (!res.ok) return []
+    const rows = await res.json()
+    if (!Array.isArray(rows)) return []
+    return rows
+      .map((r) => Number(r?.trade_price))
+      .filter((n) => Number.isFinite(n))
+      .reverse()
+  } catch {
+    return []
+  }
+}
+
+async function fetchMarketIndexDailyCloses(category, code) {
+  const urls = [
+    `https://m.stock.naver.com/front-api/v1/marketIndex/prices?category=${encodeURIComponent(
+      category
+    )}&reutersCode=${encodeURIComponent(code)}&page=1&pageSize=${CHART_POINTS}`,
+    `https://m.stock.naver.com/front-api/marketIndex/prices?category=${encodeURIComponent(
+      category
+    )}&reutersCode=${encodeURIComponent(code)}&page=1&pageSize=${CHART_POINTS}`,
+    `https://api.stock.naver.com/marketindex/${encodeURIComponent(
+      category
+    )}/${encodeURIComponent(code)}/prices?page=1&pageSize=${CHART_POINTS}`
+  ]
+
+  for (const url of urls) {
+    try {
+      const res = await eFetch(url, { headers: CHART_HEADERS })
+      if (!res.ok) continue
+      const rows = findPriceRows(await res.json())
+      const prices = extractCloses(rows)
+      if (prices.length) return prices
+    } catch {
+      // 다음 공개 엔드포인트로 폴백
+    }
+  }
+  return []
+}
+
+export async function fetchNaverMarketIndexDailyCloses(symbol) {
+  const parsed = parseMarketSymbol(symbol)
+  if (!parsed) return []
+  if (parsed.category === 'index') {
+    try {
+      const res = await eFetch(
+        `https://m.stock.naver.com/api/index/${encodeURIComponent(
+          parsed.code
+        )}/price?pageSize=${CHART_POINTS}&page=1`,
+        { headers: CHART_HEADERS }
+      )
+      if (!res.ok) return []
+      return extractCloses(await res.json())
+    } catch {
+      return []
+    }
+  }
+  if (parsed.category === 'cryptoUpbit' || parsed.category === 'cryptoBithumb') {
+    return fetchCryptoDailyCloses(parsed.category, parsed.code)
+  }
+  return fetchMarketIndexDailyCloses(parsed.category, parsed.code)
+}
+
+export async function fetchNaverMarketIndex(symbol, { skipChart = false } = {}) {
   const parsed = parseMarketSymbol(symbol)
   if (!parsed) throw new Error(`잘못된 네이버 시장지표 코드: ${symbol}`)
+
+  if (parsed.category === 'index') {
+    return fetchDomesticIndex(parsed.code, { skipChart })
+  }
 
   const source = MARKET_INDEX_SOURCES.find((s) => s.category === parsed.category)
   if (!source) throw new Error(`지원하지 않는 네이버 시장지표: ${parsed.category}`)
 
-  const items = await fetchMarketSource(source)
+  const [items, prices] = await Promise.all([
+    fetchMarketSource(source),
+    skipChart ? Promise.resolve([]) : fetchNaverMarketIndexDailyCloses(symbol)
+  ])
   const item = items.find((x) => {
     const code = String(x.reutersCode || x.symbolCode || x.code || '').trim()
     return code === parsed.code
   })
   if (!item) throw new Error(`네이버 시장지표를 찾을 수 없음: ${parsed.code}`)
 
-  return marketItemToQuote(symbol, source, item)
-}
-
-export async function fetchNaverMarketIndexDailyCloses() {
-  return []
+  return marketItemToQuote(symbol, source, item, prices)
 }
 
 const DAILY_URL = (code) =>
@@ -375,11 +596,35 @@ function normalizeUSTicker(item) {
   return null
 }
 
+function normalizeDomesticIndexCode(item) {
+  const candidates = [item.code, item.symbolCode, item.reutersCode]
+    .filter(Boolean)
+    .map((v) => String(v).trim().toUpperCase())
+  return candidates.find((code) => DOMESTIC_INDEX_BY_CODE.has(code)) || null
+}
+
 function toNaverStockSearchItem(item) {
   const nation = String(item.nationCode || item.nation || '').toUpperCase()
   const typeName = String(item.typeName || item.typeCode || '')
   const url = String(item.url || '')
   const rawCode = String(item.code || '').trim()
+
+  const indexCode = normalizeDomesticIndexCode(item)
+  const isDomesticIndex =
+    Boolean(indexCode) &&
+    (url.includes('/domestic/index/') || /지수|코스피|코스닥/i.test(typeName + ' ' + (item.name || '')))
+
+  if (isDomesticIndex) {
+    const info = DOMESTIC_INDEX_BY_CODE.get(indexCode)
+    return {
+      market: 'NV',
+      symbol: `index:${indexCode}`,
+      name: item.name || info?.name || indexCode,
+      type: info?.type || typeName || '국내지수',
+      unit: '',
+      currency: ''
+    }
+  }
 
   const isDomestic =
     nation === 'KOR' ||
@@ -438,7 +683,14 @@ export async function searchKoreanStocks(keyword) {
     searchNaverEquities(keyword).catch(() => []),
     searchNaverMarketIndexes(keyword).catch(() => [])
   ])
-  return [...stocks, ...marketIndexes]
+  const all = [...stocks, ...searchDomesticIndexes(keyword), ...marketIndexes]
+  const seen = new Set()
+  return all.filter((item) => {
+    const key = `${item.market}-${item.symbol}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 export async function fetchKoreanStock(code, { skipChart = false } = {}) {

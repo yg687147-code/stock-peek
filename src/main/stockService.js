@@ -5,14 +5,14 @@ import { getItems } from './watchlist.js'
 const REFRESH_FAST = 3_000 // 어느 한 시장이라도 열려있을 때
 const REFRESH_SLOW = 60_000 // 한/미 모두 닫혔을 때
 const JITTER = 250 // ms, 다중 사용자 호출 분산용
-const CHART_TTL = 600_000 // 차트는 일봉(3개월)이라 10분 캐시로 충분 — 네이버 차트 요청 1/10로 감소
+const CHART_TTL = 600_000 // 3개월 일봉은 10분 캐시 — 모든 자산의 차트 호출을 억제
 
 let polling = false
 let timer = null
 let cache = []
 const listeners = new Set()
 
-// 일봉 prices 캐시. key: "KR-005930", value: { prices, ts }
+// 일봉 prices 캐시. key: "KR-005930", "NV-index:KOSPI" 등.
 const chartCache = new Map()
 
 // --- 시장 시간 판단 (KST 기준) ----------------------------------
@@ -69,6 +69,18 @@ function anyMarketOpen() {
 // 마지막으로 성공한 시세. key: "US-AAPL", value: 성공 결과 객체
 const lastGood = new Map()
 
+function cachedChart(key) {
+  const cached = chartCache.get(key)
+  if (!cached || Date.now() - cached.ts >= CHART_TTL) return null
+  return cached.prices
+}
+
+function rememberChart(key, prices) {
+  if (Array.isArray(prices) && prices.length) {
+    chartCache.set(key, { prices, ts: Date.now() })
+  }
+}
+
 async function fetchOne(item) {
   const key = `${item.market}-${item.symbol}`
   // 보유 정보를 먼저 추출 — fetch 결과와 무관하게 항상 보존.
@@ -79,20 +91,21 @@ async function fetchOne(item) {
   try {
     let result
     if (item.market === 'KR') {
-      const cached = chartCache.get(key)
-      const useCachedChart = cached && Date.now() - cached.ts < CHART_TTL
+      const prices = cachedChart(key)
       result = await fetchKoreanStock(item.symbol, {
-        skipChart: useCachedChart
+        skipChart: Boolean(prices)
       })
-      if (useCachedChart) {
-        result.prices = cached.prices
-      } else if (result.prices?.length) {
-        chartCache.set(key, { prices: result.prices, ts: Date.now() })
-      }
+      if (prices) result.prices = prices
+      else rememberChart(key, result.prices)
     } else if (item.market === 'US') {
       result = await fetchUSStock(item.symbol)
     } else if (item.market === 'NV') {
-      result = await fetchNaverMarketIndex(item.symbol)
+      const prices = cachedChart(key)
+      result = await fetchNaverMarketIndex(item.symbol, {
+        skipChart: Boolean(prices)
+      })
+      if (prices) result.prices = prices
+      else rememberChart(key, result.prices)
     } else {
       return { ...item, ...holding, error: 'unknown market' }
     }

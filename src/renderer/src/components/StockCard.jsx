@@ -38,6 +38,13 @@ function formatProfit(stock) {
   return { profitText, ratioText, isUp: profit >= 0 }
 }
 
+function formatQuantity(stock) {
+  const value = Number(stock.quantity).toLocaleString('ko-KR', {
+    maximumFractionDigits: 8
+  })
+  return stock.market === 'NV' ? value : `${value}주`
+}
+
 function CardBtn({ onClick, title, label, className }) {
   return (
     <button
@@ -108,9 +115,7 @@ function StockCard({ stock, onRemove, onEditHolding }) {
       </div>
       {profit && (
         <div className="row holding">
-          <span className="holding-qty">
-            {Number(stock.quantity).toLocaleString('ko-KR')}주
-          </span>
+          <span className="holding-qty">{formatQuantity(stock)}</span>
           <span className={`holding-profit ${profit.isUp ? 'up' : 'down'}`}>
             {profit.profitText} ({profit.ratioText})
           </span>

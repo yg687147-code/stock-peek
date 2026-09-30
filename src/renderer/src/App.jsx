@@ -177,16 +177,19 @@ function App() {
     if (marketA !== marketB) return
 
     const same = stocks.filter((s) => s.market === marketA)
-    const others = stocks.filter((s) => s.market !== marketA)
     const oldIndex = same.findIndex((s) => idOf(s) === active.id)
     const newIndex = same.findIndex((s) => idOf(s) === over.id)
     if (oldIndex < 0 || newIndex < 0) return
     const reordered = arrayMove(same, oldIndex, newIndex)
 
-    const next =
-      marketA === 'KR'
-        ? [...reordered, ...others]
-        : [...others, ...reordered]
+    let reorderedIndex = 0
+    const next = stocks.map((s) => {
+      if (s.market !== marketA) return s
+      const replacement = reordered[reorderedIndex]
+      reorderedIndex += 1
+      return replacement
+    })
+
     setStocks(next)
     window.api.reorderStocks(
       next.map((s) => ({ market: s.market, symbol: s.symbol }))
@@ -195,8 +198,10 @@ function App() {
 
   const kr = stocks.filter((s) => s.market === 'KR')
   const us = stocks.filter((s) => s.market === 'US')
+  const nv = stocks.filter((s) => s.market === 'NV')
   const krIds = kr.map(idOf)
   const usIds = us.map(idOf)
+  const nvIds = nv.map(idOf)
   const existingKeys = new Set(stocks.map(idOf))
 
   return (
@@ -324,12 +329,28 @@ function App() {
                   />
                 ))}
               </SortableContext>
-              {kr.length > 0 && us.length > 0 && <div className="divider" />}
+              {kr.length > 0 && (us.length > 0 || nv.length > 0) && (
+                <div className="divider" />
+              )}
               <SortableContext
                 items={usIds}
                 strategy={verticalListSortingStrategy}
               >
                 {us.map((s) => (
+                  <SortableCard
+                    key={idOf(s)}
+                    stock={s}
+                    onRemove={handleRemove}
+                    onEditHolding={handleEditHolding}
+                  />
+                ))}
+              </SortableContext>
+              {us.length > 0 && nv.length > 0 && <div className="divider" />}
+              <SortableContext
+                items={nvIds}
+                strategy={verticalListSortingStrategy}
+              >
+                {nv.map((s) => (
                   <SortableCard
                     key={idOf(s)}
                     stock={s}

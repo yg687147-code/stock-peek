@@ -3,7 +3,13 @@ import { useI18n } from '../i18n'
 
 function formatPrice(stock) {
   if (!Number.isFinite(stock.price)) return '—'
-  if (stock.market === 'KR') return `${Math.round(stock.price).toLocaleString('ko-KR')}원`
+  if (stock.market === 'KR' || stock.currency === 'KRW') {
+    const decimals = Number.isInteger(stock.priceDecimals) ? stock.priceDecimals : 0
+    return `${stock.price.toLocaleString('ko-KR', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    })}원`
+  }
   return `$${stock.price.toFixed(2)}`
 }
 
@@ -19,7 +25,7 @@ function formatProfit(stock) {
   const ratio = ((stock.price - stock.avgPrice) / stock.avgPrice) * 100
   const sign = profit > 0 ? '+' : ''
   const profitText =
-    stock.market === 'KR'
+    stock.market === 'KR' || stock.currency === 'KRW'
       ? `${sign}${Math.round(profit).toLocaleString('ko-KR')}원`
       : `${sign}$${profit.toFixed(2)}`
   const ratioText = `${sign}${ratio.toFixed(2)}%`
@@ -97,7 +103,7 @@ function StockCard({ stock, onRemove, onEditHolding }) {
       {profit && (
         <div className="row holding">
           <span className="holding-qty">
-            {Number(stock.quantity).toLocaleString('ko-KR')}주
+            {Number(stock.quantity).toLocaleString('ko-KR')}{stock.assetType ? '' : '주'}
           </span>
           <span className={`holding-profit ${profit.isUp ? 'up' : 'down'}`}>
             {profit.profitText} ({profit.ratioText})

@@ -1,4 +1,4 @@
-import { fetchKoreanStock } from './api/naver.js'
+import { fetchKoreanStock, fetchNaverMarketIndex } from './api/naver.js'
 import { fetchUSStock } from './api/yahoo.js'
 import { getItems } from './watchlist.js'
 
@@ -91,6 +91,8 @@ async function fetchOne(item) {
       }
     } else if (item.market === 'US') {
       result = await fetchUSStock(item.symbol)
+    } else if (item.market === 'NV') {
+      result = await fetchNaverMarketIndex(item.symbol)
     } else {
       return { ...item, ...holding, error: 'unknown market' }
     }

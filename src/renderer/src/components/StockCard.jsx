@@ -4,6 +4,13 @@ import { useI18n } from '../i18n'
 function formatPrice(stock) {
   if (!Number.isFinite(stock.price)) return '—'
   if (stock.market === 'KR') return `${Math.round(stock.price).toLocaleString('ko-KR')}원`
+  if (stock.market === 'NV') {
+    const value = Number(stock.price).toLocaleString('ko-KR', {
+      maximumFractionDigits: 4
+    })
+    const suffix = stock.unit || stock.currency || ''
+    return suffix ? `${value} ${suffix}` : value
+  }
   return `$${stock.price.toFixed(2)}`
 }
 
@@ -18,10 +25,15 @@ function formatProfit(stock) {
   const profit = (stock.price - stock.avgPrice) * stock.quantity
   const ratio = ((stock.price - stock.avgPrice) / stock.avgPrice) * 100
   const sign = profit > 0 ? '+' : ''
-  const profitText =
-    stock.market === 'KR'
-      ? `${sign}${Math.round(profit).toLocaleString('ko-KR')}원`
-      : `${sign}$${profit.toFixed(2)}`
+  let profitText
+  if (stock.market === 'KR') {
+    profitText = `${sign}${Math.round(profit).toLocaleString('ko-KR')}원`
+  } else if (stock.market === 'NV') {
+    const suffix = stock.unit || stock.currency || ''
+    profitText = `${sign}${profit.toLocaleString('ko-KR', { maximumFractionDigits: 4 })}${suffix ? ` ${suffix}` : ''}`
+  } else {
+    profitText = `${sign}$${profit.toFixed(2)}`
+  }
   const ratioText = `${sign}${ratio.toFixed(2)}%`
   return { profitText, ratioText, isUp: profit >= 0 }
 }

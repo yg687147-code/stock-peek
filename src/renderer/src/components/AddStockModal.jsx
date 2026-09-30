@@ -64,6 +64,21 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
   }
 
   const kw = keyword.trim()
+  const isEnglish = t('add.us') === 'US'
+  const selectedMarketLabel =
+    selected?.market === 'KR'
+      ? t('add.korea')
+      : selected?.market === 'US'
+        ? t('add.us')
+        : isEnglish
+          ? 'Naver Finance'
+          : '네이버 금융'
+  const selectedPriceUnit =
+    selected?.market === 'KR'
+      ? '₩'
+      : selected?.market === 'US'
+        ? '$'
+        : selected?.unit || selected?.currency || ''
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -144,7 +159,7 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
             <div className="selected-stock">
               <span className="selected-name">{selected.name}</span>
               <span className="selected-meta">
-                {selected.symbol} · {selected.market === 'KR' ? t('add.korea') : t('add.us')}
+                {selected.symbol} · {selectedMarketLabel}
               </span>
             </div>
 
@@ -164,14 +179,14 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
               </label>
               <label>
                 <span className="form-label">
-                  {t('add.avgPrice')} ({selected.market === 'KR' ? '₩' : '$'})
+                  {t('add.avgPrice')}{selectedPriceUnit ? ` (${selectedPriceUnit})` : ''}
                 </span>
                 <input
                   className="modal-input"
                   type="number"
                   step="any"
                   min="0"
-                  placeholder={selected.market === 'KR' ? t('holding.pricePlaceholder') : 'e.g. 189.20'}
+                  placeholder={selected.market === 'US' ? 'e.g. 189.20' : t('holding.pricePlaceholder')}
                   value={avgPrice}
                   onChange={(e) => setAvgPrice(e.target.value)}
                 />

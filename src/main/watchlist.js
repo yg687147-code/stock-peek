@@ -17,6 +17,7 @@ function normalize(market, symbol) {
   let s = String(symbol || '').trim()
   // 영문+숫자만 남김 (ETF 코드에 알파벳 포함 가능: 0023A0 등)
   if (m === 'KR') s = s.replace(/[^0-9A-Za-z]/g, '').toUpperCase()
+  else if (m === 'NV') s = s.trim()
   else s = s.toUpperCase()
   return { market: m, symbol: s }
 }
@@ -26,6 +27,10 @@ function validate({ market, symbol }) {
     if (!/^[0-9A-Za-z]{6}$/.test(symbol)) throw new Error('한국 종목코드는 6자리 영문/숫자')
   } else if (market === 'US') {
     if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) throw new Error('미국 티커는 1~10자 영문/숫자')
+  } else if (market === 'NV') {
+    if (!/^[A-Za-z][A-Za-z0-9]*:[A-Za-z0-9._=+\-]{1,64}$/.test(symbol)) {
+      throw new Error('잘못된 네이버 시장지표 코드')
+    }
   } else {
     throw new Error(`unknown market: ${market}`)
   }

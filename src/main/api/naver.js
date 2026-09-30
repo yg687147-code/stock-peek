@@ -22,8 +22,13 @@ const CHART_HEADERS = {
 
 function parseNumber(raw, formatted) {
   const r = Number(raw)
-  if (Number.isFinite(r)) return r
-  return Number(String(formatted ?? '').replace(/,/g, '').replace(/%/g, ''))
+  if (raw !== null && raw !== undefined && raw !== '' && Number.isFinite(r)) return r
+  const text = String(formatted ?? '')
+    .replace(/,/g, '')
+    .replace(/%/g, '')
+    .trim()
+  if (!text) return NaN
+  return Number(text)
 }
 
 function quoteFromMain(data) {
@@ -143,6 +148,18 @@ const MARKET_INDEX_SOURCES = [
   }
 ]
 
+const SEARCH_ALIASES = [
+  ['USD', '달러 미국달러 dollar usd'],
+  ['JPY', '엔 일본엔 yen jpy'],
+  ['EUR', '유로 euro eur'],
+  ['CNY', '위안 위안화 yuan cny'],
+  ['GBP', '파운드 영국파운드 pound gbp'],
+  ['GC', '금 골드 gold'],
+  ['SI', '은 실버 silver'],
+  ['CL', '원유 wti 유가 oil'],
+  ['LCO', '브렌트 브렌트유 brent oil']
+]
+
 const MARKET_CACHE_TTL = 2_000
 const marketListCache = new Map()
 
@@ -198,23 +215,40 @@ function toMarketSearchItem(source, item) {
   }
 }
 
+function normalizeSearchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[\s/_.:=+\-]+/g, '')
+}
+
+function marketAliases(item) {
+  const codeText = [item.reutersCode, item.symbolCode, item.code]
+    .filter(Boolean)
+    .join(' ')
+    .toUpperCase()
+  return SEARCH_ALIASES
+    .filter(([code]) => codeText.includes(code))
+    .map(([, aliases]) => aliases)
+    .join(' ')
+}
+
 function marketSearchText(source, item) {
-  return [
+  return normalizeSearchText([
     item.name,
     item.nameEng,
     item.reutersCode,
     item.symbolCode,
     item.code,
     item.unit,
-    source.type
+    source.type,
+    marketAliases(item)
   ]
     .filter(Boolean)
-    .join(' ')
-    .toLowerCase()
+    .join(' '))
 }
 
 async function searchNaverMarketIndexes(keyword) {
-  const q = keyword.trim().toLowerCase()
+  const q = normalizeSearchText(keyword)
   if (!q) return []
 
   const settled = await Promise.allSettled(MARKET_INDEX_SOURCES.map(fetchMarketSource))

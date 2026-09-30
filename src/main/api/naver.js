@@ -3,8 +3,6 @@ import { useProxy, proxyStock, proxySearch, eFetch } from './proxy.js'
 const QUOTE_URL = (code) =>
   `https://polling.finance.naver.com/api/realtime/domestic/stock/${code}`
 
-// 모바일 네이버 일봉 엔드포인트. 휴장일/거래시간 외에도 직전 거래일들 데이터를 반환.
-// (siseJson의 timeframe=minute는 평일 거래시간 외엔 빈 응답이라 sparkline이 안 그려짐)
 const CHART_URL = (code) =>
   `https://m.stock.naver.com/api/stock/${code}/price?pageSize=30&page=1`
 
@@ -67,8 +65,6 @@ function extractQuote(json) {
   const data = json?.datas?.[0] || json?.result?.areas?.[0]?.datas?.[0]
   if (!data) return null
 
-  // 정규장 + 시간외 단일가 둘 다 받아서 더 최신 거래 기준으로 표시.
-  // (장 마감 후엔 시간외 가격이 토스 등 다른 앱에서 보이는 "현재 가격"과 일치)
   const mainQ = quoteFromMain(data)
   const overQ = data.overMarketPriceInfo
     ? quoteFromOver(data.overMarketPriceInfo)
@@ -81,7 +77,6 @@ function extractQuote(json) {
     }
   }
 
-  // 1: 상한, 2: 상승, 3: 보합, 4: 하한, 5: 하락
   const isUp =
     chosen.direction === '1' ||
     chosen.direction === '2' ||
@@ -98,7 +93,6 @@ function extractQuote(json) {
 
 function extractCloses(rows) {
   if (!Array.isArray(rows)) return []
-  // 응답은 최신 → 과거 순. sparkline은 좌→우 시간순으로 그려야 하므로 reverse.
   return rows
     .map((r) => Number(String(r.closePrice ?? '').replace(/,/g, '')))
     .filter((n) => Number.isFinite(n))
@@ -108,8 +102,8 @@ function extractCloses(rows) {
 const SEARCH_URL = (kw) =>
   `https://ac.stock.naver.com/ac?q=${encodeURIComponent(kw)}&target=stock`
 
-// 네이버 금융의 시장지표 목록. 주식 검색과 함께 조회해서 환율/금/원유/금리 등을
-// 별도 하드코딩 없이 검색 결과에 포함한다.
+// 네이버 금융 공개 목록 API를 검색 대상으로 사용한다.
+// 특정 달러/금/코인을 하드코딩하는 방식이 아니라 목록 전체에서 키워드로 찾는다.
 const MARKET_INDEX_SOURCES = [
   {
     category: 'exchange',
@@ -145,6 +139,16 @@ const MARKET_INDEX_SOURCES = [
     category: 'standardInterest',
     type: '기준금리',
     url: 'https://m.stock.naver.com/front-api/marketIndex/standardInterestList'
+  },
+  {
+    category: 'cryptoUpbit',
+    type: '가상자산·업비트',
+    url: 'https://m.stock.naver.com/front-api/crypto/top?exchangeType=UPBIT&sortType=marketCap&page=1&pageSize=200'
+  },
+  {
+    category: 'cryptoBithumb',
+    type: '가상자산·빗썸',
+    url: 'https://m.stock.naver.com/front-api/crypto/top?exchangeType=BITHUMB&sortType=marketCap&page=1&pageSize=200'
   }
 ]
 
@@ -157,11 +161,32 @@ const SEARCH_ALIASES = [
   ['GC', '금 골드 gold'],
   ['SI', '은 실버 silver'],
   ['CL', '원유 wti 유가 oil'],
-  ['LCO', '브렌트 브렌트유 brent oil']
+  ['LCO', '브렌트 브렌트유 brent oil'],
+  ['BTC', '비트코인 bitcoin btc'],
+  ['ETH', '이더리움 ethereum eth']
 ]
 
 const MARKET_CACHE_TTL = 2_000
 const marketListCache = new Map()
+
+function normalizeMarketObject(value) {
+  if (!value || typeof value !== 'object') return null
+
+  const code = value.reutersCode || value.symbolCode || value.code || value.nfTicker
+  const name = value.name || value.krName
+  const closePrice = value.closePrice ?? value.tradePrice
+  if (!name || !code || closePrice == null) return null
+
+  return {
+    ...value,
+    name,
+    reutersCode: String(code),
+    closePrice,
+    fluctuations: value.fluctuations ?? value.changeValue,
+    fluctuationsRatio: value.fluctuationsRatio ?? value.changeRate,
+    unit: value.unit || (value.nfTicker ? 'KRW' : '')
+  }
+}
 
 function collectMarketObjects(value, out = []) {
   if (Array.isArray(value)) {
@@ -170,8 +195,8 @@ function collectMarketObjects(value, out = []) {
   }
   if (!value || typeof value !== 'object') return out
 
-  const code = value.reutersCode || value.symbolCode || value.code
-  if (value.name && code && value.closePrice != null) out.push(value)
+  const normalized = normalizeMarketObject(value)
+  if (normalized) out.push(normalized)
 
   for (const child of Object.values(value)) {
     if (child && typeof child === 'object') collectMarketObjects(child, out)
@@ -239,6 +264,7 @@ function marketSearchText(source, item) {
     item.reutersCode,
     item.symbolCode,
     item.code,
+    item.nfTicker,
     item.unit,
     source.type,
     marketAliases(item)
@@ -264,7 +290,7 @@ async function searchNaverMarketIndexes(keyword) {
     }
   }
 
-  return results.slice(0, 30)
+  return results.slice(0, 40)
 }
 
 function parseMarketSymbol(symbol) {
@@ -320,12 +346,9 @@ export async function fetchNaverMarketIndex(symbol) {
 }
 
 export async function fetchNaverMarketIndexDailyCloses() {
-  // 시장지표마다 과거 데이터 API 구조가 달라 포트폴리오 통계에는 현재가만 사용.
-  // 카드 표시에는 영향이 없고, 통계 계산에서는 해당 항목만 추세/변동성 계산에서 제외됨.
   return []
 }
 
-// 통계(추세·변동성)용 일봉 종가 — 최근 ~3개월(70거래일 여유). 실패 시 빈 배열.
 const DAILY_URL = (code) =>
   `https://m.stock.naver.com/api/stock/${code}/price?pageSize=70&page=1`
 

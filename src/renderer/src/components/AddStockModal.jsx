@@ -17,6 +17,10 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
+  const isEnglish = t('add.us') === 'US'
+  const assetLabel = isEnglish ? 'Assets' : '자산'
+  const assetPlaceholder = isEnglish ? 'USD/KRW, JPY/KRW, Gold, Ethereum' : '달러/원, 엔/원, 금/원, 이더리움/원'
+
   // step 2: 선택한 종목 + 매수가/수량 입력
   const [selected, setSelected] = useState(null)
   const [quantity, setQuantity] = useState('')
@@ -121,7 +125,7 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
                 className={market === 'ASSET' ? 'active' : ''}
                 onClick={() => handleMarket('ASSET')}
               >
-                {t('add.asset')}
+                {assetLabel}
               </button>
             </div>
 
@@ -133,7 +137,7 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
                   ? t('add.searchPlaceholderKR')
                   : market === 'US'
                     ? t('add.searchPlaceholderUS')
-                    : t('add.searchPlaceholderAsset')
+                    : assetPlaceholder
               }
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
@@ -184,7 +188,7 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
             <div className="selected-stock">
               <span className="selected-name">{selected.name}</span>
               <span className="selected-meta">
-                {selected.symbol} · {isKRWAsset ? t('add.asset') : selected.market === 'KR' ? t('add.korea') : t('add.us')}
+                {selected.symbol} · {isKRWAsset ? assetLabel : selected.market === 'KR' ? t('add.korea') : t('add.us')}
               </span>
             </div>
 

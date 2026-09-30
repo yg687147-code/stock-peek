@@ -32,8 +32,6 @@ const KRW_ASSETS = {
   'JPY-KRW': {
     name: '엔/원 (100엔)',
     type: 'FX',
-    yahoo: 'JPYKRW=X',
-    factor: 100,
     priceDecimals: 2
   },
   'ETH-KRW': {
@@ -144,6 +142,21 @@ function toAssetResult(symbol, def, price, previousClose, prices) {
 async function fetchKRWAsset(symbol) {
   const def = KRW_ASSETS[symbol]
   if (!def) return null
+
+  if (symbol === 'JPY-KRW') {
+    const [usdKrw, usdJpy] = await Promise.all([
+      fetchYahooInstrument('KRW=X'),
+      fetchYahooInstrument('JPY=X')
+    ])
+    const convert = (krwPerUsd, jpyPerUsd) => (krwPerUsd / jpyPerUsd) * 100
+    const price = convert(usdKrw.price, usdJpy.price)
+    const previousClose =
+      Number.isFinite(usdKrw.previousClose) && Number.isFinite(usdJpy.previousClose)
+        ? convert(usdKrw.previousClose, usdJpy.previousClose)
+        : NaN
+    const prices = combineSeries(usdKrw.prices, usdJpy.prices, convert)
+    return toAssetResult(symbol, def, price, previousClose, prices)
+  }
 
   if (symbol === 'GOLD-KRW') {
     const [gold, usdKrw] = await Promise.all([

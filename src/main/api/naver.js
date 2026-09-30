@@ -1,4 +1,4 @@
-import { useProxy, proxyStock, proxySearch, eFetch } from './proxy.js'
+import { useProxy, proxyStock, eFetch } from './proxy.js'
 
 const QUOTE_URL = (code) =>
   `https://polling.finance.naver.com/api/realtime/domestic/stock/${code}`
@@ -100,10 +100,10 @@ function extractCloses(rows) {
 }
 
 const SEARCH_URL = (kw) =>
-  `https://ac.stock.naver.com/ac?q=${encodeURIComponent(kw)}&target=stock`
+  `https://m.stock.naver.com/front-api/search/autoComplete?query=${encodeURIComponent(
+    kw
+  )}&target=stock,index,marketindicator,coin,ipo`
 
-// 네이버 금융 공개 목록 API를 검색 대상으로 사용한다.
-// 특정 달러/금/코인을 하드코딩하는 방식이 아니라 목록 전체에서 키워드로 찾는다.
 const MARKET_INDEX_SOURCES = [
   {
     category: 'exchange',
@@ -363,30 +363,79 @@ export async function fetchKoreanDailyCloses(code) {
   }
 }
 
-async function searchKoreanEquities(keyword) {
-  if (useProxy()) {
-    try {
-      return await proxySearch('KR', keyword)
-    } catch {
-      // 프록시 실패 시 직접 호출로 폴백
+function normalizeUSTicker(item) {
+  const candidates = [item.symbolCode, item.code, item.reutersCode]
+    .filter(Boolean)
+    .map((v) => String(v).trim().toUpperCase())
+
+  for (let symbol of candidates) {
+    symbol = symbol.replace(/\.(O|N|A)$/i, '')
+    if (/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) return symbol
+  }
+  return null
+}
+
+function toNaverStockSearchItem(item) {
+  const nation = String(item.nationCode || item.nation || '').toUpperCase()
+  const typeName = String(item.typeName || item.typeCode || '')
+  const url = String(item.url || '')
+  const rawCode = String(item.code || '').trim()
+
+  const isDomestic =
+    nation === 'KOR' ||
+    url.includes('/domestic/stock/') ||
+    /코스피|코스닥|코넥스/i.test(typeName)
+
+  if (isDomestic && /^[0-9A-Za-z]{6}$/.test(rawCode)) {
+    return {
+      market: 'KR',
+      symbol: rawCode.toUpperCase(),
+      name: item.name || rawCode,
+      type: typeName
     }
   }
+
+  const isUS =
+    nation === 'USA' ||
+    /NASDAQ|NYSE|AMEX|나스닥|뉴욕|아멕스/i.test(typeName) ||
+    (/\/worldstock\//.test(url) && /\.(O|N|A)(?:\/|$)/i.test(url))
+
+  if (isUS) {
+    const symbol = normalizeUSTicker(item)
+    if (!symbol) return null
+    return {
+      market: 'US',
+      symbol,
+      name: item.name || symbol,
+      type: typeName || 'US'
+    }
+  }
+
+  return null
+}
+
+async function searchNaverEquities(keyword) {
   const res = await eFetch(SEARCH_URL(keyword), { headers: CHART_HEADERS })
   if (!res.ok) throw new Error(`Naver search: ${res.status}`)
   const json = await res.json()
-  return (json?.items || [])
-    .filter((i) => i.nationCode === 'KOR' && i.category === 'stock')
-    .map((i) => ({
-      market: 'KR',
-      symbol: i.code,
-      name: i.name,
-      type: i.typeName || ''
-    }))
+  const items = json?.result?.items || json?.items || []
+
+  const seen = new Set()
+  const results = []
+  for (const item of items) {
+    const mapped = toNaverStockSearchItem(item)
+    if (!mapped) continue
+    const key = `${mapped.market}-${mapped.symbol}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    results.push(mapped)
+  }
+  return results.slice(0, 20)
 }
 
 export async function searchKoreanStocks(keyword) {
   const [stocks, marketIndexes] = await Promise.all([
-    searchKoreanEquities(keyword).catch(() => []),
+    searchNaverEquities(keyword).catch(() => []),
     searchNaverMarketIndexes(keyword).catch(() => [])
   ])
   return [...stocks, ...marketIndexes]

@@ -3,7 +3,6 @@ import { useI18n } from '../i18n'
 
 function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
   const { t } = useI18n()
-  const [market, setMarket] = useState('KR')
   const [keyword, setKeyword] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -27,7 +26,9 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
     setSearching(true)
     const timer = setTimeout(async () => {
       try {
-        const items = await window.api.searchStocks(market, kw)
+        // 검색은 항상 네이버 금융 통합 검색으로 보낸다.
+        // 결과 안의 market(KR/US/NV)에 따라 추가 후 시세 조회 경로가 결정된다.
+        const items = await window.api.searchStocks('KR', kw)
         setResults(items || [])
       } catch (e) {
         setError(e?.message || t('add.searchFail'))
@@ -37,7 +38,7 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
       }
     }, 250)
     return () => clearTimeout(timer)
-  }, [keyword, market, selected])
+  }, [keyword, selected])
 
   const handlePick = (item) => {
     setSelected(item)
@@ -65,6 +66,9 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
 
   const kw = keyword.trim()
   const isEnglish = t('add.us') === 'US'
+  const searchPlaceholder = isEnglish
+    ? 'Stock, ticker, USD/KRW, gold, Bitcoin...'
+    : '종목명, 티커, 달러, 금, 비트코인...'
   const selectedMarketLabel =
     selected?.market === 'KR'
       ? t('add.korea')
@@ -87,29 +91,10 @@ function AddStockModal({ onClose, onAdd, existingKeys = new Set() }) {
           <>
             <div className="modal-title">{t('add.title')}</div>
 
-            <div className="seg">
-              <button
-                type="button"
-                className={market === 'KR' ? 'active' : ''}
-                onClick={() => setMarket('KR')}
-              >
-                {t('add.korea')}
-              </button>
-              <button
-                type="button"
-                className={market === 'US' ? 'active' : ''}
-                onClick={() => setMarket('US')}
-              >
-                {t('add.us')}
-              </button>
-            </div>
-
             <input
               autoFocus
               className="modal-input"
-              placeholder={
-                market === 'KR' ? t('add.searchPlaceholderKR') : t('add.searchPlaceholderUS')
-              }
+              placeholder={searchPlaceholder}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               spellCheck={false}
